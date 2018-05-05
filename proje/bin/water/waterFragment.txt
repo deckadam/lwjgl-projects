@@ -1,0 +1,86 @@
+#version 400 core
+
+in vec4 clipSpace;
+in vec2 texture_coords;
+in vec3 toCameraVector;
+in vec3 fromLightVector[4];
+
+out vec4 out_Color;
+
+uniform sampler2D reflectionTexture;
+uniform sampler2D refractionTexture;
+uniform sampler2D dudvMap;
+uniform sampler2D normalMap;
+uniform sampler2D depthMap;
+uniform vec3 lightColour[4];
+uniform vec3 attenuation[4];
+
+uniform float moveFactor;
+
+const float waveStrength = 0.03;
+const float shineDamper= 75.0;
+const float reflectivity = 0.33;
+
+void main(void) {
+	vec2 ndc=(clipSpace.xy/clipSpace.w)/2.0+0.5;
+	vec2 reflectCoord=vec2(ndc.x,-ndc.y);
+	vec2 refractCoord=vec2(ndc.x,ndc.y);
+	
+	float depth= texture (depthMap,refractCoord).r;
+	float near=0.1;
+	float far = 1000.0;
+	float floorDistance = 2.0*near*far/(far+near -(2.0*depth -1.0)*(far - near));
+	
+	depth=gl_FragCoord.z;
+	float waterDistance = 2.0*near*far/(far+near -(2.0*depth -1.0)*(far - near));
+	
+	float waterDepth= floorDistance-waterDistance;
+	
+	vec2 distortedTexCoords = texture(dudvMap, vec2(texture_coords.x + moveFactor, texture_coords.y)).rg*0.1;
+	distortedTexCoords = texture_coords + vec2(distortedTexCoords.x, distortedTexCoords.y+moveFactor);
+	vec2 totalDistortion = (texture(dudvMap, distortedTexCoords).rg * 2.0 - 1.0) * waveStrength * clamp(waterDepth/20.0,0.0,1.0);
+	
+	refractCoord +=totalDistortion;
+	refractCoord= clamp(refractCoord ,0.001,0.999);
+	reflectCoord +=totalDistortion;
+	reflectCoord.x= clamp(reflectCoord.x ,0.001,0.999);
+	reflectCoord.y= clamp(reflectCoord.y ,-0.999,-0.001);
+
+	vec4 reflectColour = texture (reflectionTexture , reflectCoord);
+	vec4 refractColour = texture (refractionTexture , refractCoord);
+	
+	vec4 normalMapColour = texture (normalMap,distortedTexCoords);
+	vec3 normal = vec3(normalMapColour.r*2.0-1.0,normalMapColour.b*3.0 ,normalMapColour.g*2.0-1.0);
+	normal=normalize(normal);
+	
+	vec3 viewVector=normalize(toCameraVector);
+	float refractiveFactor= dot (viewVector , normal);
+	refractiveFactor= pow(refractiveFactor,0.85);
+	refractiveFactor= clamp(refractiveFactor,0.0,1.0);
+	
+	
+	
+	vec3 totalDiffuse=vec3(0.0);
+	vec3 totalSpecular=vec3(0.0);
+	for(int i =0;i<4;i++){
+	
+	float distance =length(fromLightVector[i]);
+	float attFactor= attenuation[i].x+ (attenuation[i].y*distance)+(attenuation[i].z*distance*distance);
+ 	vec3 unitLightVector =  normalize(fromLightVector[i]);
+	float nDotl= dot(normal,unitLightVector);	
+	float brightness=max(nDotl,0.25);	
+	vec3 reflectedLightDirection=reflect(unitLightVector,normal);
+	float specularFactor=dot(reflectedLightDirection,viewVector);
+	specularFactor=max(specularFactor,0.0);
+	float dampedFactor=pow (specularFactor,shineDamper);
+	totalDiffuse=totalDiffuse+(brightness* lightColour[i])/attFactor;		
+	totalSpecular=totalSpecular+(dampedFactor*reflectivity*lightColour[i])/attFactor;
+	}
+	
+	
+	
+	
+	out_Color = mix (reflectColour , refractColour , refractiveFactor);
+	out_Color= vec4(totalDiffuse,1.0) * mix(vec4(0.0,0.35,0.3,1.0),out_Color,0.8) +vec4(totalSpecular,0.0);
+	out_Color.a=clamp(waterDepth/10.0,0.0,1.0);
+}
